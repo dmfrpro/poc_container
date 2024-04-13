@@ -1,25 +1,53 @@
 #!/bin/bash
 
-ROOTFS_ARCHIVE=rootfs.tar.xz
-
-BASE_PATH=/var/lib/poc_container
-
-IMAGES_PATH=$BASE_PATH/overlay
-MOUNTPOINTS_PATH=$BASE_PATH/mnt
+set -e
 
 
-prepare_dirs_environment () {
-    sudo mkdir -p $BASE_PATH $IMAGES_PATH $MOUNTPOINTS_PATH
+PROJECT_PATH=/var/lib/poc_container
+
+IMAGES_PATH=$PROJECT_PATH/overlay
+MOUNTPOINTS_PATH=$PROJECT_PATH/mnt
+
+ROOTFS_ARCHIVE_PATH=$PROJECT_PATH/rootfs.tar
+
+build_rootfs_archive () {
+    local image_name=$(whoami)/ubuntu_sysbench
+
+    # Build docker image with included sysbench
+    docker build ./ -t $image_name
+
+    # Get image id
+    local format="{{.Repository}} {{.ID}}"
+    local image_id=$(docker images --format="$format" | grep $image_name | awk '{print $2}')
+
+    # Export rootfs to archive
+    local container_id=$(docker create $image_id)
+    sudo docker export $container_id -o $ROOTFS_ARCHIVE_PATH
+
+    # Remove image and container
+    docker container rm $container_id
+    docker image rm $image_id
 }
 
-prune_dirs_environment () {
-    sudo rm -rf $BASE_PATH
+prepare_project () {
+    sudo mkdir -p $PROJECT_PATH $IMAGES_PATH $MOUNTPOINTS_PATH
+    build_rootfs_archive
 }
 
-setup_rootfs () {
+setup_loop_fs () {
     local image_path=$IMAGES_PATH/$1.img
     local mountpoint_path=$MOUNTPOINTS_PATH/$1
-    local size=$2
+    local size=10G
+
+    if [[ -z $1 ]]; then
+        echo "Invalid image/container name: '$1'"
+        return
+    fi
+
+    if [[ -f $image_path ]]; then
+        echo "Image/container '$1' already exists"
+        return
+    fi
 
     # Create an empty file which will be associated with loop device
     sudo fallocate -l $size $image_path
@@ -34,12 +62,18 @@ setup_rootfs () {
     sudo mkdir -p $mountpoint_path
     sudo mount -t ext4 $loop_device $mountpoint_path
 
-    # Unpack and copy debian-slim rootfs to the image file
-    sudo tar -xf $ROOTFS_ARCHIVE -C $mountpoint_path
+    # Copy rootfs contents to mountpoint
+    sudo tar -xf $ROOTFS_ARCHIVE_PATH -C $mountpoint_path
 }
 
-remove_rootfs () {
+remove_loop_fs () {
     local image_path=$IMAGES_PATH/$1.img
+    local mountpoint_path=$MOUNTPOINTS_PATH/$1
+
+    if [[ ! -f $image_path ]]; then
+        echo "No image/container '$1' exists"
+        return
+    fi
 
     # Get loop device by image name
     # Cuts '/dev/loop0' from '/dev/loop0: []: (/var/lib/poc_container/overlay/test_loop.img)'
@@ -49,11 +83,62 @@ remove_rootfs () {
     sudo umount $loop_device
     sudo losetup -D $loop_device
 
-    # Remove image
-    sudo rm -f $image_path
+    sudo rm -rf $image_path $mountpoint_path
+    echo "Removed: $1"
 }
 
-prepare_dirs_environment
-setup_rootfs test_loop 10G
-remove_rootfs test_loop
-prune_dirs_environment
+remove_project () {
+    local entries=( $(ls $MOUNTPOINTS_PATH) )
+
+    for entry in "${entries[@]}"; do
+        remove_loop_fs $(basename $entry)
+    done
+
+    sudo rm -rf $PROJECT_PATH
+}
+
+list_filesystem () {
+    local entries=( $(ls $MOUNTPOINTS_PATH) )
+
+    local content="NAME DEVICE MOUNTPOINT"
+
+    for entry in "${entries[@]}"; do
+        entry=$(basename $entry)
+
+        local image_path=$IMAGES_PATH/$entry.img
+        local loop_device=$(losetup -j $image_path | awk -F: '{print $1}')
+        local mountpoint=$MOUNTPOINTS_PATH/$entry
+
+        local line=$(echo -e "$entry $loop_device $mountpoint")
+        content="$content\n$line"
+    done
+
+    echo -e $content | column -t
+}
+
+print_help () {
+    echo \
+"
+Usage:  setup_rootfs.sh COMMAND [ARG...]
+
+Proof of concept container runtime written in Bash.
+Author: dmfrpro <Dmitrii Alekhin>
+
+COMMANDS:
+    init                - Initialize the project directories and pull base rootfs image
+    prune               - Remove everything and uninstall
+    build <name>        - Build (but not start) named container of disk size 10G
+    list, ls            - List container name, corresponding loop device, and mountpoint
+    remove, rm <name>   - Remove container by its name
+    help, --help        - Print this help message
+"
+}
+
+case $1 in
+    "init"                  )   prepare_project     ;;
+    "prune"                 )   remove_project      ;;
+    "build"                 )   setup_loop_fs $2    ;;
+    "list"   | "ls"         )   list_filesystem     ;;
+    "remove" | "rm"         )   remove_loop_fs $2   ;;
+    "help"   | "--help" | * )   print_help          ;;
+esac

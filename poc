@@ -117,11 +117,10 @@ list_filesystem () {
 }
 
 print_help () {
-    echo \
-"
-Usage:  setup_rootfs.sh COMMAND [ARG...]
+    echo -e \
+"Usage:  poc COMMAND [ARG...]
 
-Proof of concept container runtime written in Bash.
+\"Proof Of \e[9mConcept\e[0m Container\" runtime written in Bash.
 Author: dmfrpro <Dmitrii Alekhin>
 
 COMMANDS:
@@ -130,8 +129,7 @@ COMMANDS:
     build <name>        - Build (but not start) named container of disk size 10G
     list, ls            - List container name, corresponding loop device, and mountpoint
     remove, rm <name>   - Remove container by its name
-    help, --help        - Print this help message
-"
+    help, --help        - Print this help message"
 }
 
 case $1 in

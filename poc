@@ -1,6 +1,9 @@
 #!/bin/bash
 
-set -e
+if [[ $EUID -ne 0 ]]; then
+    echo "You must be root to run poc"
+    exit 1
+fi
 
 PROJECT_PATH=/var/lib/poc_container
 
@@ -8,6 +11,9 @@ IMAGES_PATH=$PROJECT_PATH/overlay
 MOUNTPOINTS_PATH=$PROJECT_PATH/mnt
 
 ROOTFS_ARCHIVE_PATH=$PROJECT_PATH/rootfs.tar
+
+IFACE=pocbr0
+HOST_IP="10.200.1.1"
 
 build_rootfs_archive () {
     local image_name=$(whoami)/ubuntu_sysbench
@@ -21,16 +27,30 @@ build_rootfs_archive () {
 
     # Export rootfs to archive
     local container_id=$(docker create $image_id)
-    sudo docker export $container_id -o $ROOTFS_ARCHIVE_PATH
+    docker export $container_id -o $ROOTFS_ARCHIVE_PATH
 
     # Remove image and container
     docker container rm $container_id
     docker image rm $image_id
 }
 
+setup_iface () {
+    ip link add $IFACE type bridge
+    ifconfig $IFACE $HOST_IP up
+
+    local default_iface=$(route | grep "^default" | grep -o '[^ ]*$')
+    ip link set $default_iface master $IFACE
+}
+
+remove_iface () {
+    ifconfig $IFACE $HOST_IP down
+    ip link del $IFACE
+}
+
 prepare_project () {
-    sudo mkdir -p $PROJECT_PATH $IMAGES_PATH $MOUNTPOINTS_PATH
+    mkdir -p $PROJECT_PATH $IMAGES_PATH $MOUNTPOINTS_PATH
     build_rootfs_archive
+    setup_iface
 }
 
 setup_loop_fs () {
@@ -49,20 +69,20 @@ setup_loop_fs () {
     fi
 
     # Create an empty file which will be associated with loop device
-    sudo fallocate -l $size $image_path
+    fallocate -l $size $image_path
 
     # Create a loop device
-    loop_device=$(sudo losetup -fP --show $image_path)
+    loop_device=$(losetup -fP --show $image_path)
 
     # Create EXT4 filesystem inside the loop device
-    sudo mkfs.ext4 $loop_device &> /dev/null
+    mkfs.ext4 $loop_device &> /dev/null
 
     # Mount loop device
-    sudo mkdir -p $mountpoint_path
-    sudo mount -t ext4 $loop_device $mountpoint_path
+    mkdir -p $mountpoint_path
+    mount -t ext4 $loop_device $mountpoint_path
 
     # Copy rootfs contents to mountpoint
-    sudo tar -xf $ROOTFS_ARCHIVE_PATH -C $mountpoint_path
+    tar -xf $ROOTFS_ARCHIVE_PATH -C $mountpoint_path
 }
 
 remove_loop_fs () {
@@ -79,10 +99,10 @@ remove_loop_fs () {
     loop_device=$(losetup -j $image_path | awk -F: '{print $1}')
 
     # Umount and remove loop device
-    sudo umount $loop_device
-    sudo losetup -D $loop_device
+    umount $loop_device
+    losetup -D $loop_device
 
-    sudo rm -rf $image_path $mountpoint_path
+    rm -rf $image_path $mountpoint_path
     echo "Removed: $1"
 }
 
@@ -93,7 +113,8 @@ remove_project () {
         remove_loop_fs $(basename $entry)
     done
 
-    sudo rm -rf $PROJECT_PATH
+    rm -rf $PROJECT_PATH
+    remove_iface
 }
 
 list_filesystem () {
@@ -134,45 +155,54 @@ run_container () {
         return
     fi
 
-    # Per container specific network interfaces and net namespace
-    local veth_host="veth0_$1"
-    local veth_container="veth1_$1"
-    local ns_name="netns_$1"
-
-    local host_ip="192.168.20.1"
-    local container_ip="192.168.20.2"
-
-    # All remaining argumets will be parsed as container CMD
     local cmd="${@:2}"
 
-    # # Host bridge name
-    # local bridge_host=enp34s0
+    local veth="veth0_$1"
+    local vpeer="vpeer1_$1"
+    local network_ns_name="netns_$1"
 
-    # # Create host veth paired with container veth and set it up 
-    # sudo ip link add dev $veth_host type veth peer name $veth_container
-    # sudo ip link set dev $veth_host up
+    # local veth_addr="10.200.1.1"
+    local veth_addr=$HOST_IP
+    local vpeer_addr="10.200.1.2"
 
-    # # Use bridged connection for the host veth
-    # sudo ip link set $veth_host master $bridge_host
+    # Create network namespace
+    ip netns add $network_ns_name
 
-    # # Create network namespace and assign it to container veth
-    # sudo ip netns add $ns_name
-    # sudo ip link set $veth_container netns $ns_name
+    # Create veth-vpeer linkage
+    ip link add $veth type veth peer name $vpeer
 
-    # # Configure IP container veth
-    # sudo ip netns exec $ns_name ip link set dev lo up
-    # sudo ip netns exec $ns_name ip addr add $container_ip/24 dev $veth_container
-    # sudo ip netns exec $ns_name ip link set dev $veth_container up
+    # Set up isolated network namespace for vpeer
+    ip link set $vpeer netns $network_ns_name
 
-    # # Configure routing
-    # sudo ip netns exec $ns_name ip route add default via $host_ip
+    # Setup $veth IP
+    ip addr add $veth_addr/24 dev $veth
+    ip link set $veth up
 
-    # # DNS settings
-    # sudo bash -c "echo 'nameserver 8.8.8.8' > $mountpoint_path/etc/resolv.conf"
+    # Setup $vpeer IP and route
+    ip netns exec $network_ns_name ip addr add $vpeer_addr/24 dev $vpeer
 
-    # echo "Netowrk is configured."
+    # Set up interfaces in isolated network namespace
+    ip netns exec $network_ns_name ip link set lo up
+    ip netns exec $network_ns_name ip link set $vpeer up
 
-    local cgroups="cpu,memory"
+    # Set up routing in isolated network namespace
+    ip netns exec $network_ns_name ip route add default via $veth_addr
+
+    # Enable IP-forwarding
+    echo 1 > /proc/sys/net/ipv4/ip_forward
+    
+    # Enable masquerading
+    iptables -t nat -F
+    iptables -t nat -A POSTROUTING -s $vpeer_addr/24 -o $IFACE -j MASQUERADE
+    
+    # Set up NAT forwarding
+    iptables -P FORWARD DROP
+    iptables -F FORWARD
+    iptables -A FORWARD -i $IFACE -o $veth -j ACCEPT
+    iptables -A FORWARD -o $IFACE -i $veth -j ACCEPT
+
+    # Set up DNS
+    echo "nameserver 8.8.8.8" > $mountpoint_path/etc/resolv.conf
 
     # Build container command with proc and sys mounts
     local set_path="export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -181,19 +211,21 @@ run_container () {
     local container_cmd="$set_path ; $mount_proc && $mount_sys && $cmd"
 
     # Create a cgroup with default settings
-    sudo cgcreate -g "$cgroups:$1"
+    local cgroups="cpu,memory"
+    cgcreate -g "$cgroups:$1"
 
     # Run container
-    sudo cgexec -g "$cgroups:$1" \
-        unshare --fork --net --mount --pid --ipc --mount-proc \
+    cgexec -g "$cgroups:$1" \
+        ip netns exec $network_ns_name \
+        unshare --fork --mount --pid --ipc --mount-proc \
         chroot $mountpoint_path /bin/bash -c "$container_cmd" || true
 
     echo "Container '$1' exited. Cleanup"
 
     # Cleanup
-    sudo cgdelete "$cgroups:$1"
-    # sudo ip link del dev $veth_host
-    # sudo ip netns del $ns_name
+    cgdelete "$cgroups:$1"
+    ip link del dev $veth
+    ip netns del $network_ns_name
 }
 
 print_help () {

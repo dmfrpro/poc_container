@@ -2,7 +2,6 @@
 
 set -e
 
-
 PROJECT_PATH=/var/lib/poc_container
 
 IMAGES_PATH=$PROJECT_PATH/overlay
@@ -116,6 +115,87 @@ list_filesystem () {
     echo -e $content | column -t
 }
 
+run_container () {
+    local image_path=$IMAGES_PATH/$1.img
+    local mountpoint_path=$MOUNTPOINTS_PATH/$1
+
+    if [[ -z $1 ]]; then
+        echo "Invalid image/container name: '$1'"
+        return
+    fi
+
+    if [[ ! -f $image_path ]]; then
+        echo "Image '$1' does not exist"
+        return
+    fi
+
+    if [[ ! -d $mountpoint_path ]]; then
+        echo "Container '$1' does not exist"
+        return
+    fi
+
+    # Per container specific network interfaces and net namespace
+    local veth_host="veth0_$1"
+    local veth_container="veth1_$1"
+    local ns_name="netns_$1"
+
+    local host_ip="192.168.20.1"
+    local container_ip="192.168.20.2"
+
+    # All remaining argumets will be parsed as container CMD
+    local cmd="${@:2}"
+
+    # # Host bridge name
+    # local bridge_host=enp34s0
+
+    # # Create host veth paired with container veth and set it up 
+    # sudo ip link add dev $veth_host type veth peer name $veth_container
+    # sudo ip link set dev $veth_host up
+
+    # # Use bridged connection for the host veth
+    # sudo ip link set $veth_host master $bridge_host
+
+    # # Create network namespace and assign it to container veth
+    # sudo ip netns add $ns_name
+    # sudo ip link set $veth_container netns $ns_name
+
+    # # Configure IP container veth
+    # sudo ip netns exec $ns_name ip link set dev lo up
+    # sudo ip netns exec $ns_name ip addr add $container_ip/24 dev $veth_container
+    # sudo ip netns exec $ns_name ip link set dev $veth_container up
+
+    # # Configure routing
+    # sudo ip netns exec $ns_name ip route add default via $host_ip
+
+    # # DNS settings
+    # sudo bash -c "echo 'nameserver 8.8.8.8' > $mountpoint_path/etc/resolv.conf"
+
+    # echo "Netowrk is configured."
+
+    local cgroups="cpu,memory"
+
+    # Build container command with proc and sys mounts
+    local set_path="export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    local mount_proc="mount -t proc proc /proc"
+    local mount_sys="mount -t sysfs sys /sys"
+    local container_cmd="$set_path ; $mount_proc && $mount_sys && $cmd"
+
+    # Create a cgroup with default settings
+    sudo cgcreate -g "$cgroups:$1"
+
+    # Run container
+    sudo cgexec -g "$cgroups:$1" \
+        unshare --fork --net --mount --pid --ipc --mount-proc \
+        chroot $mountpoint_path /bin/bash -c "$container_cmd" || true
+
+    echo "Container '$1' exited. Cleanup"
+
+    # Cleanup
+    sudo cgdelete "$cgroups:$1"
+    # sudo ip link del dev $veth_host
+    # sudo ip netns del $ns_name
+}
+
 print_help () {
     echo -e \
 "Usage:  poc COMMAND [ARG...]
@@ -125,18 +205,38 @@ Author: dmfrpro <Dmitrii Alekhin>
 
 COMMANDS:
     init                - Initialize the project directories and pull base rootfs image
+        Example: poc init
+
     prune               - Remove everything and uninstall
+        Example: poc prune
+
     build <name>        - Build (but not start) named container of disk size 10G
+        Example: poc build my_test_container
+
+    run <name> <cmd...> - Run a command inside a container (need to build it for the first time)
+        Example: poc run my_test_container echo hello
+                 poc run my_test_container bash
+                 poc run my_test_container \"mount && ls /proc && echo && ls /sys && whoami\"
+
     list, ls            - List container name, corresponding loop device, and mountpoint
+        Example: poc ls
+                 poc list
+
     remove, rm <name>   - Remove container by its name
-    help, --help        - Print this help message"
+        Example: poc rm my_test_container
+                 poc remove my_test_container
+
+    help, --help        - Print this help message
+        Example: poc help
+                 poc --help"
 }
 
 case $1 in
-    "init"                  )   prepare_project     ;;
-    "prune"                 )   remove_project      ;;
-    "build"                 )   setup_loop_fs $2    ;;
-    "list"   | "ls"         )   list_filesystem     ;;
-    "remove" | "rm"         )   remove_loop_fs $2   ;;
-    "help"   | "--help" | * )   print_help          ;;
+    "init"                  )   prepare_project         ;;
+    "prune"                 )   remove_project          ;;
+    "build"                 )   setup_loop_fs $2        ;;
+    "run"                   )   run_container "${@:2}"  ;;
+    "list"   | "ls"         )   list_filesystem         ;;
+    "remove" | "rm"         )   remove_loop_fs $2       ;;
+    "help"   | "--help" | * )   print_help              ;;
 esac

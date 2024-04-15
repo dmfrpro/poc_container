@@ -44,9 +44,13 @@ See `sudo ./poc help` for detailed information.
 
 ## Dependencies
 
-This project was tested on Ubuntu 22.04. Dependencies can be installed
-by running: 
+This project was tested on ArchLinux and Ubuntu 22.04. Dependencies can be
+installed by running: 
 
 ```bash
 sudo apt update && sudo apt install iptables libcgroup util-linux net-tools iproute2
 ```
+
+## Demo video
+
+[https://youtu.be/MvewehI-lFg](https://youtu.be/MvewehI-lFg)

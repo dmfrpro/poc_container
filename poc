@@ -158,6 +158,11 @@ remove_project () {
         remove_loop_fs $(basename $entry)
     done
 
+    # Cleanup iptables
+    iptables -t nat -F
+    iptables -P FORWARD DROP
+    iptables -F FORWARD
+
     rm -rf $PROJECT_PATH
     remove_isolated_iface
 }
@@ -263,12 +268,9 @@ run_container () {
     echo 1 > /proc/sys/net/ipv4/ip_forward
     
     # Enable masquerading
-    # iptables -t nat -F
     iptables -t nat -A POSTROUTING -s $vpeer_addr/$CONTAINER_MASK -o $iface -j MASQUERADE
     
     # Set up NAT forwarding
-    # iptables -P FORWARD DROP
-    # iptables -F FORWARD
     iptables -A FORWARD -i $iface -o $veth -j ACCEPT
     iptables -A FORWARD -o $iface -i $veth -j ACCEPT
 

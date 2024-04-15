@@ -83,15 +83,25 @@ prepare_project () {
 setup_loop_fs () {
     local image_path=$IMAGES_PATH/$1.img
     local mountpoint_path=$MOUNTPOINTS_PATH/$1
-    local size=10G
+    local size=$3
 
     if [[ -z $1 ]]; then
-        echo "Invalid image/container name: '$1'"
+        echo "Invalid container name: '$1'"
         return
     fi
 
     if [[ -f $image_path ]]; then
-        echo "Image/container '$1' already exists"
+        echo "Container '$1' already exists"
+        return
+    fi
+
+    if [[ "$2" != "disk-size" ]]; then
+        echo "Invalid argument '$2'. Expected 'disk-size <size>'"
+        return
+    fi
+
+    if [[ -z $3 ]]; then
+        echo "Container filesystem size is not specified. Use '20G' for example."
         return
     fi
 
@@ -110,16 +120,24 @@ setup_loop_fs () {
 
     # Copy rootfs contents to mountpoint
     tar -xf $ROOTFS_ARCHIVE_PATH -C $mountpoint_path
+
+    # Track container status, beginning from 'stopped'
+    local status=$META_PATH/$1
+    echo "stopped" > $status
 }
 
 remove_loop_fs () {
     local image_path=$IMAGES_PATH/$1.img
     local mountpoint_path=$MOUNTPOINTS_PATH/$1
+    local status=$META_PATH/$1
 
     if [[ ! -f $image_path ]]; then
         echo "No image/container '$1' exists"
         return
     fi
+
+    # Remove status
+    rm -f $status
 
     # Get loop device by image name
     # Cuts '/dev/loop0' from '/dev/loop0: []: (/var/lib/poc_container/overlay/test_loop.img)'
@@ -147,7 +165,7 @@ remove_project () {
 list_filesystem () {
     local entries=( $(ls $MOUNTPOINTS_PATH) )
 
-    local content="NAME DEVICE MOUNTPOINT"
+    local content="NAME DEVICE MOUNTPOINT STATUS"
 
     for entry in "${entries[@]}"; do
         entry=$(basename $entry)
@@ -155,8 +173,9 @@ list_filesystem () {
         local image_path=$IMAGES_PATH/$entry.img
         local loop_device=$(losetup -j $image_path | awk -F: '{print $1}')
         local mountpoint=$MOUNTPOINTS_PATH/$entry
+        local status=$(cat $META_PATH/$entry | xargs)
 
-        local line=$(echo -e "$entry $loop_device $mountpoint")
+        local line=$(echo -e "$entry $loop_device $mountpoint $status")
         content="$content\n$line"
     done
 
@@ -268,6 +287,10 @@ run_container () {
     local cgroups="cpu,memory"
     cgcreate -g "$cgroups:$2"
 
+    # Update container status
+    local status=$META_PATH/$2
+    echo "running" > $status
+
     # Run container
     cgexec -g "$cgroups:$2" \
         ip netns exec $network_ns_name \
@@ -285,6 +308,10 @@ run_container () {
     current_global_ip=$(cat $ip_file | xargs)
     current_global_ip=$(next_ip_addr $current_global_ip -256)
     echo "$current_global_ip" > $ip_file
+
+    # Update container status
+    local status=$META_PATH/$2
+    echo "stopped" > $status
 }
 
 print_help () {
@@ -295,14 +322,15 @@ print_help () {
 Author: dmfrpro <Dmitrii Alekhin>
 
 COMMANDS:
-    init                - Initialize the project directories and pull base rootfs image
+    init                            - Initialize the project directories and pull base rootfs image
         Example: poc init
 
     prune                           - Remove everything and uninstall
         Example: poc prune
 
-    build <name>                    - Build (but not start) named container of disk size 10G
-        Example: poc build my_test_container
+    build <name> disk-size <size>   - Build (but not start) named container of disk size <size> gigabytes.
+                                      Size should in a format like '20G'
+        Example: poc build my_test_container disk-size 20G
 
     run net-default <name> <cmd...> - Run a command inside a container (need to build it for the first time)
                                       with default network bridge (taken from 'route' command)
@@ -311,16 +339,16 @@ COMMANDS:
                  poc run net-default my_test_container \"mount && ls /proc && echo && ls /sys && whoami\"
     
     run net-host <name> <cmd...>    - Run a command inside a container (need to build it for the first time)
-                                      with host network bridge '$VIRTUAL_BRIDGE_NAME' (analog of docker0)
+                                      with host network bridge '$VIRTUAL_BRIDGE_NAME' (analog of 'docker0')
         Example: poc run net-host my_test_container echo hello
                  poc run net-host my_test_container bash
                  poc run net-host my_test_container \"mount && ls /proc && echo && ls /sys && whoami\"
 
-    list, ls                        - List container name, corresponding loop device, and mountpoint
+    list, ls                        - List container name, corresponding loop device, mountpoint, and status
         Example: poc ls
                  poc list
 
-    remove, rm <name>               - Remove container by its name
+    remove, rm <name>               - Remove container by its name. Container MUST BE STOPPED before removal
         Example: poc rm my_test_container
                  poc remove my_test_container
 
@@ -332,7 +360,7 @@ COMMANDS:
 case $1 in
     "init"                  )   prepare_project         ;;
     "prune"                 )   remove_project          ;;
-    "build"                 )   setup_loop_fs $2        ;;
+    "build"                 )   setup_loop_fs "${@:2}"  ;;
     "run"                   )   run_container "${@:2}"  ;;
     "list"   | "ls"         )   list_filesystem         ;;
     "remove" | "rm"         )   remove_loop_fs $2       ;;

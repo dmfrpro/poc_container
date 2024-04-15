@@ -332,27 +332,27 @@ COMMANDS:
 
     build <name> disk-size <size>   - Build (but not start) named container of disk size <size> gigabytes.
                                       Size should in a format like '20G'
-        Example: poc build my_test_container disk-size 20G
+        Example: poc build test0 disk-size 20G
 
     run net-default <name> <cmd...> - Run a command inside a container (need to build it for the first time)
                                       with default network bridge (taken from 'route' command)
-        Example: poc run net-default my_test_container echo hello
-                 poc run net-default my_test_container bash
-                 poc run net-default my_test_container \"mount && ls /proc && echo && ls /sys && whoami\"
+        Example: poc run net-default test0 echo hello
+                 poc run net-default test0 bash
+                 poc run net-default test0 \"mount && ls /proc && echo && ls /sys && whoami\"
     
     run net-host <name> <cmd...>    - Run a command inside a container (need to build it for the first time)
                                       with host network bridge '$VIRTUAL_BRIDGE_NAME' (analog of 'docker0')
-        Example: poc run net-host my_test_container echo hello
-                 poc run net-host my_test_container bash
-                 poc run net-host my_test_container \"mount && ls /proc && echo && ls /sys && whoami\"
+        Example: poc run net-host test0 echo hello
+                 poc run net-host test0 bash
+                 poc run net-host test0 \"mount && ls /proc && echo && ls /sys && whoami\"
 
     list, ls                        - List container name, corresponding loop device, mountpoint, and status
         Example: poc ls
                  poc list
 
     remove, rm <name>               - Remove container by its name. Container MUST BE STOPPED before removal
-        Example: poc rm my_test_container
-                 poc remove my_test_container
+        Example: poc rm test0
+                 poc remove test0
 
     help, --help                    - Print this help message
         Example: poc help

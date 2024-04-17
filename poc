@@ -194,33 +194,10 @@ run_container () {
 
     local ip_file=$GLOBAL_DEFAULT_IP
 
-    if [[ "$1" == "net-default" ]]; then
-        iface=$(route | grep "^default" | grep -o '[^ ]*$')
-        ip_file=$GLOBAL_DEFAULT_IP
-        echo "Using default bridge: $iface"
-    elif [[ "$1" == "net-host" ]]; then
-        iface=$VIRTUAL_BRIDGE_NAME
-        ip_file=$GLOBAL_HOST_IP
-        echo "Using virtual bridge: $iface"
-    else
-        echo "Invalid network settings, use either 'net-default' or 'net-host'"
-        return
-    fi
-
-    local current_global_ip=$(cat $ip_file | xargs)
-
-    veth_addr=$(next_ip_addr $current_global_ip 256)
-    vpeer_addr=$(next_ip_addr $current_global_ip 257)
-
-    # Update global IP
-    echo $veth_addr > $ip_file
-
-    echo "Veth IP: $veth_addr, Vpeer IP: $vpeer_addr Global IP: $(cat $ip_file | xargs)"
-
     local image_path=$IMAGES_PATH/$2.img
     local mountpoint_path=$MOUNTPOINTS_PATH/$2
 
-    if [[ -z $1 ]]; then
+    if [[ -z $2 ]]; then
         echo "Invalid image/container name: '$2'"
         return
     fi
@@ -235,7 +212,59 @@ run_container () {
         return
     fi
 
+    # Build container command with proc and sys mounts
     local cmd="${@:3}"
+    local set_path="export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    local mount_proc="mount -t proc proc /proc"
+    local mount_sys="mount -t sysfs sys /sys"
+    local container_cmd="$set_path ; $mount_proc && $mount_sys && $cmd"
+
+    # Create a cgroup with default settings
+    local cgroups="cpu,memory"
+    cgcreate -g "$cgroups:$2"
+
+    if [[ "$1" == "net-default" ]]; then
+        iface=$(route | grep "^default" | grep -o '[^ ]*$')
+        ip_file=$GLOBAL_DEFAULT_IP
+        echo "Using default bridge: $iface"
+    elif [[ "$1" == "net-host" ]]; then
+        iface=$VIRTUAL_BRIDGE_NAME
+        ip_file=$GLOBAL_HOST_IP
+        echo "Using virtual bridge: $iface"
+    elif [[ "$1" == "net-disabled" ]]; then
+        # Update container status
+        local status=$META_PATH/$2
+        echo "running" > $status
+
+        # Run container
+        cgexec -g "$cgroups:$2" \
+            unshare --net --fork --mount --pid --ipc --mount-proc \
+            chroot $mountpoint_path /bin/bash -c "$container_cmd" || true
+
+        echo "Container '$2' exited. Cleanup"
+
+        # Cleanup
+        cgdelete "$cgroups:$2"
+
+        # Update container status
+        status=$META_PATH/$2
+        echo "stopped" > $status
+
+        return
+    else
+        echo "Invalid network settings, use either 'net-default' or 'net-host'"
+        return
+    fi
+
+    local current_global_ip=$(cat $ip_file | xargs)
+
+    veth_addr=$(next_ip_addr $current_global_ip 256)
+    vpeer_addr=$(next_ip_addr $current_global_ip 257)
+
+    # Update global IP
+    echo $veth_addr > $ip_file
+
+    echo "Veth IP: $veth_addr, Vpeer IP: $vpeer_addr Global IP: $(cat $ip_file | xargs)"
 
     local veth="veth0_$2"
     local vpeer="vpeer1_$2"
@@ -279,16 +308,6 @@ run_container () {
 
     echo "Network has been configured."
 
-    # Build container command with proc and sys mounts
-    local set_path="export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-    local mount_proc="mount -t proc proc /proc"
-    local mount_sys="mount -t sysfs sys /sys"
-    local container_cmd="$set_path ; $mount_proc && $mount_sys && $cmd"
-
-    # Create a cgroup with default settings
-    local cgroups="cpu,memory"
-    cgcreate -g "$cgroups:$2"
-
     # Update container status
     local status=$META_PATH/$2
     echo "running" > $status
@@ -312,7 +331,7 @@ run_container () {
     echo "$current_global_ip" > $ip_file
 
     # Update container status
-    local status=$META_PATH/$2
+    status=$META_PATH/$2
     echo "stopped" > $status
 }
 
@@ -334,17 +353,18 @@ COMMANDS:
                                       Size should in a format like '20G'
         Example: poc build test0 disk-size 20G
 
-    run net-default <name> <cmd...> - Run a command inside a container (need to build it for the first time)
-                                      with default network bridge (taken from 'route' command)
+    run <net-type> <name> <cmd...>  - Run a command inside a container (need to build it for the first time)
+                                      
+                                      <net-type> must be one of 3 types:
+                                      1. net-default    - connects to a default network interface with Internet
+                                                          access. Usually it's eth0, wlan0, or enp34s0
+                                      2. net-host       - uses $VIRTUAL_BRIDGE_NAME bridge (analog of docker0)
+                                      3. net-disabled   - run with disabled networking. Network namespace
+                                                          remains isolated.
+
         Example: poc run net-default test0 echo hello
-                 poc run net-default test0 bash
-                 poc run net-default test0 \"mount && ls /proc && echo && ls /sys && whoami\"
-    
-    run net-host <name> <cmd...>    - Run a command inside a container (need to build it for the first time)
-                                      with host network bridge '$VIRTUAL_BRIDGE_NAME' (analog of 'docker0')
-        Example: poc run net-host test0 echo hello
                  poc run net-host test0 bash
-                 poc run net-host test0 \"mount && ls /proc && echo && ls /sys && whoami\"
+                 poc run net-disabled test0 \"mount && ls /proc && echo && ls /sys && whoami\"
 
     list, ls                        - List container name, corresponding loop device, mountpoint, and status
         Example: poc ls

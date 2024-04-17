@@ -18,8 +18,8 @@ For the standard interface a network `10.200.1.1/16` is created, each
 
 `veth 10.200.N.1` - `vpeer 10.200.N.2`, where `N > 1` is the container
 number according to the account. Globally, the IP address `10.200.1.1`
-is stored in a file, and each new container, when created in this file,
-increases the IP address by `256`, and when deleted, lowers it by `256`.
+is stored in a file, and each new container increases the IP address by
+`256` on creation, and lowers it by `256` on deletion.
 
 Routing is configured as follows: `10.200.N.1/24`.
 Same applied to the virtual bridge, with a network `10.100.1.1/16`.

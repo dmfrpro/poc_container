@@ -219,10 +219,6 @@ run_container () {
     local mount_sys="mount -t sysfs sys /sys"
     local container_cmd="$set_path ; $mount_proc && $mount_sys && $cmd"
 
-    # Create a cgroup with default settings
-    local cgroups="cpu,memory"
-    cgcreate -g "$cgroups:$2"
-
     if [[ "$1" == "net-default" ]]; then
         iface=$(route | grep "^default" | grep -o '[^ ]*$')
         ip_file=$GLOBAL_DEFAULT_IP
@@ -232,6 +228,10 @@ run_container () {
         ip_file=$GLOBAL_HOST_IP
         echo "Using virtual bridge: $iface"
     elif [[ "$1" == "net-disabled" ]]; then
+        # Create a cgroup with default settings
+        local cgroups="cpu,memory"
+        cgcreate -g "$cgroups:$2"
+
         # Update container status
         local status=$META_PATH/$2
         echo "running" > $status
@@ -311,6 +311,10 @@ run_container () {
     # Update container status
     local status=$META_PATH/$2
     echo "running" > $status
+
+    # Create a cgroup with default settings
+    local cgroups="cpu,memory"
+    cgcreate -g "$cgroups:$2"
 
     # Run container
     cgexec -g "$cgroups:$2" \

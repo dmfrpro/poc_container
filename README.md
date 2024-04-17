@@ -13,6 +13,17 @@ Each container has its own `veth-vpeer` pair identified by name, i.e
 for container `test0` - `veth0_test0 <-> vpeer1_test0`. Same for
 network namespace: `netns_test0` and cgroup: `cpu,memory:test0`.
 
+For the standard interface a network `10.200.1.1/16` is created, each
+`veth-vpeer` pair obtains the following IP addresses:
+
+`veth 10.200.N.1` - `vpeer 10.200.N.2`, where `N > 1` is the container
+number according to the account. Globally, the IP address `10.200.1.1`
+is stored in a file, and each new container, when created in this file,
+increases the IP address by `256`, and when deleted, lowers it by `256`.
+
+Routing is configured as follows: `10.200.N.1/24`.
+Same applied to the virtual bridge, with a network `10.100.1.1/16`.
+
 Each container mounts `procfs` and `sysfs` on startup.
 
 Rootfs is built by `docker` once at project initialization,
@@ -28,7 +39,7 @@ To run a container, run:
 ```bash
 sudo ./poc init  # Need to run once to initialize project files and build rootfs
 sudo ./poc build test0 disk-size 20G
-sudo ./poc run net-default test0 bash # Run Bash session inside the container
+sudo ./poc run net-disabled test0 bash # Run Bash session inside the container
 
 # Press Ctrl+D to exit from the container
 ```

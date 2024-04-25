@@ -68,7 +68,7 @@ This project was tested on ArchLinux. Dependencies are:
 
 ```bash
 iptables
-libcgroup
+cgroup-tools
 util-linux
 net-tools
 iproute2
